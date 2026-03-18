@@ -107,8 +107,7 @@ from vllm_omni.entrypoints.openai.protocol.videos import (
 )
 from vllm_omni.entrypoints.openai.serving_chat import OmniOpenAIServingChat
 from vllm_omni.entrypoints.openai.serving_soulx_duplug_turn import (
-    build_soulx_duplug_app,
-    is_soulx_duplug_model,
+    maybe_run_soulx_duplug_server,
 )
 from vllm_omni.entrypoints.openai.serving_speech import OmniOpenAIServingSpeech
 from vllm_omni.entrypoints.openai.serving_speech_stream import OmniStreamingSpeechHandler
@@ -251,30 +250,14 @@ async def omni_run_server_worker(listen_address, sock, args, client_config=None,
     if log_config is not None:
         uvicorn_kwargs["log_config"] = log_config
 
-    if is_soulx_duplug_model(args.model):
-        app = build_soulx_duplug_app(args)
-        logger.info("Starting SoulX-Duplug /turn server on %s", listen_address)
-        shutdown_task = await serve_http(
-            app,
-            sock=sock,
-            enable_ssl_refresh=args.enable_ssl_refresh,
-            host=args.host,
-            port=args.port,
-            log_level=args.uvicorn_log_level,
-            access_log=not args.disable_uvicorn_access_log,
-            timeout_keep_alive=envs.VLLM_HTTP_TIMEOUT_KEEP_ALIVE,
-            ssl_keyfile=args.ssl_keyfile,
-            ssl_certfile=args.ssl_certfile,
-            ssl_ca_certs=args.ssl_ca_certs,
-            ssl_cert_reqs=args.ssl_cert_reqs,
-            h11_max_incomplete_event_size=args.h11_max_incomplete_event_size,
-            h11_max_header_count=args.h11_max_header_count,
-            **uvicorn_kwargs,
-        )
-        try:
-            await shutdown_task
-        finally:
-            sock.close()
+    # Let model-specific serving modules take over when needed.
+    # Keep the generic entrypoint free of per-model boot details.
+    if await maybe_run_soulx_duplug_server(
+        listen_address=listen_address,
+        sock=sock,
+        args=args,
+        uvicorn_kwargs=uvicorn_kwargs,
+    ):
         return
 
     async with build_async_omni(

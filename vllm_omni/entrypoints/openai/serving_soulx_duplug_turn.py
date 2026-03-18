@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import time
 from contextlib import asynccontextmanager
@@ -10,9 +11,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import vllm.envs as envs
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from vllm.entrypoints.launcher import serve_http
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 SESSION_TTL_SEC = 60
 GC_INTERVAL_SEC = 10
@@ -122,11 +128,6 @@ class SoulXDuplugTurnHandler:
                 if not session_id:
                     continue
 
-                session = self.sessions.get(session_id)
-                if session is None:
-                    session = TurnSession(TurnTakingEngine(self.model))
-                    self.sessions[session_id] = session
-
                 try:
                     audio = np.frombuffer(base64.b64decode(data["audio"]), dtype=np.float32)
                 except Exception:
@@ -150,6 +151,11 @@ class SoulXDuplugTurnHandler:
                         )
                     )
                     continue
+
+                session = self.sessions.get(session_id)
+                if session is None:
+                    session = TurnSession(TurnTakingEngine(self.model))
+                    self.sessions[session_id] = session
 
                 async with self._model_lock:
                     state = session.feed_audio(audio)
@@ -185,8 +191,6 @@ def build_soulx_duplug_app(args: Any) -> FastAPI:
         with contextlib.suppress(asyncio.CancelledError):
             await gc_task
 
-    import contextlib
-
     app = FastAPI(lifespan=lifespan)
     app.state.engine_client = _NoopEngineClient()
 
@@ -204,3 +208,43 @@ def build_soulx_duplug_app(args: Any) -> FastAPI:
         await handler.handle_session(ws)
 
     return app
+
+
+async def maybe_run_soulx_duplug_server(
+    *,
+    listen_address: str,
+    sock: Any,
+    args: Any,
+    uvicorn_kwargs: dict[str, Any],
+) -> bool:
+    """Run the SoulX-Duplug-specific server when the requested model matches."""
+    if not is_soulx_duplug_model(args.model):
+        return False
+
+    app = build_soulx_duplug_app(args)
+    logger.info("Starting SoulX-Duplug /turn server on %s", listen_address)
+
+    local_uvicorn_kwargs = dict(uvicorn_kwargs)
+    shutdown_task = await serve_http(
+        app,
+        sock=sock,
+        enable_ssl_refresh=args.enable_ssl_refresh,
+        host=args.host,
+        port=args.port,
+        log_level=args.uvicorn_log_level,
+        access_log=not args.disable_uvicorn_access_log,
+        timeout_keep_alive=envs.VLLM_HTTP_TIMEOUT_KEEP_ALIVE,
+        ssl_keyfile=args.ssl_keyfile,
+        ssl_certfile=args.ssl_certfile,
+        ssl_ca_certs=args.ssl_ca_certs,
+        ssl_cert_reqs=args.ssl_cert_reqs,
+        h11_max_incomplete_event_size=args.h11_max_incomplete_event_size,
+        h11_max_header_count=args.h11_max_header_count,
+        **local_uvicorn_kwargs,
+    )
+    try:
+        await shutdown_task
+    finally:
+        sock.close()
+
+    return True
