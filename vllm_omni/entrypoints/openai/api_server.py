@@ -68,6 +68,7 @@ from vllm.entrypoints.openai.speech_to_text.serving import (
 )
 from vllm.entrypoints.openai.utils import validate_json_request
 from vllm.entrypoints.pooling.classify.serving import ServingClassification
+from vllm.entrypoints.pooling.embed.serving import OpenAIServingEmbedding
 from vllm.entrypoints.pooling.pooling.serving import OpenAIServingPooling
 from vllm.entrypoints.pooling.score.serving import ServingScores
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
@@ -122,12 +123,6 @@ from vllm_omni.lora.utils import stable_lora_int_id
 logger = init_logger(__name__)
 router = APIRouter()
 profiler_router = APIRouter()
-
-
-def _build_openai_serving_embedding(*args: Any, **kwargs: Any) -> Any:
-    from vllm.entrypoints.pooling.embed.serving import OpenAIServingEmbedding
-
-    return OpenAIServingEmbedding(*args, **kwargs)
 
 
 def _should_enable_profiler_endpoints(args: Namespace) -> bool:
@@ -684,7 +679,7 @@ async def omni_init_app_state(
         else None
     )
     state.openai_serving_embedding = (
-        _build_openai_serving_embedding(
+        OpenAIServingEmbedding(
             engine_client,
             state.openai_serving_models,
             request_logger=request_logger,

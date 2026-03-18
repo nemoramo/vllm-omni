@@ -12,7 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch Whisper model."""
+"""PyTorch Whisper model.
+
+This module is vendored from the Hugging Face Whisper implementation and kept
+under the SoulX-Duplug runtime because the model depends on a custom VQ speech
+tokenizer checkpoint that is not exposed as a standalone upstream package. The
+current turn-serving path only instantiates ``WhisperVQEncoder``, but the file
+keeps the upstream-adjacent class structure needed to load that checkpoint
+without additional runtime patching.
+"""
 
 import math
 import os.path

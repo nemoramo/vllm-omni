@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import logging
 import math
 import random
 import re
@@ -19,6 +21,8 @@ from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, WhisperFeatureExtractor
 
 from .speech_tokenizer import WhisperVQEncoder
+
+logger = logging.getLogger(__name__)
 
 
 def split_cn_en(text: str) -> list[str]:
@@ -143,6 +147,20 @@ def _maybe_copy_array(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _maybe_copy_array(v) for k, v in value.items()}
     return value
+
+
+def _clone_cache(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, tuple):
+        return tuple(_clone_cache(item) for item in value)
+    if isinstance(value, list):
+        return [_clone_cache(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _clone_cache(item) for key, item in value.items()}
+    return copy.deepcopy(value)
 
 
 def _resolve_torch_dtype(device: str, precision: str) -> torch.dtype:
@@ -533,7 +551,12 @@ class SoulXDuplugTurnModel:
             if model_name == "sensevoice":
                 return SenseVoiceASR(language=asr_cfg.get("language", "auto"))
             return ParaformerASR()
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Failed to initialize SoulX cascade ASR '%s'; falling back to NullASR: %s",
+                model_name,
+                exc,
+            )
             return NullASR()
 
     def _init_hyperparameters(self) -> None:
@@ -772,8 +795,6 @@ class SoulXDuplugTurnModel:
         ).unsqueeze(0)
         delta_text = self._asr(audio_embeds)
         state = self._state_predict(delta_text)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         return state, delta_text, self.past_state["cascade_text"]
 
     def _audio_to_tokens(
@@ -913,7 +934,7 @@ class SoulXDuplugTurnModel:
             ).strip()
 
         if need_correction and self.past_state["checkpoint"] is not None:
-            self.past_state["past_key_values"] = self.past_state["checkpoint"]
+            self.past_state["past_key_values"] = _clone_cache(self.past_state["checkpoint"])
             embeds_list = []
             if corrected_prev_delta:
                 ids = self.model.tokenizer.encode(corrected_prev_delta, add_special_tokens=False)
@@ -936,7 +957,7 @@ class SoulXDuplugTurnModel:
         else:
             self.past_state["past_key_values"] = current_kv
 
-        self.past_state["checkpoint"] = self.past_state["past_key_values"]
+        self.past_state["checkpoint"] = _clone_cache(self.past_state["past_key_values"])
         self.past_state["delta_text"].append(delta_text)
 
         max_len = int(3.2 * self.sampling_rate)

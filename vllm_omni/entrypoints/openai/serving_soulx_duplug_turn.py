@@ -90,6 +90,9 @@ class SoulXDuplugTurnHandler:
     def __init__(self, model: Any) -> None:
         self.model = model
         self.sessions: dict[str, TurnSession] = {}
+        infer_config = getattr(getattr(model, "config", None), "infer_config", None)
+        input_config = getattr(infer_config, "input", None)
+        self.expected_chunk_size = input_config.get("chunk_size") if isinstance(input_config, dict) else None
         # The model snapshots per-session runtime but still mutates one shared
         # module instance, so requests need serialization to avoid cross-session
         # state corruption.
@@ -127,6 +130,25 @@ class SoulXDuplugTurnHandler:
                 try:
                     audio = np.frombuffer(base64.b64decode(data["audio"]), dtype=np.float32)
                 except Exception:
+                    continue
+                if self.expected_chunk_size is not None and audio.size != self.expected_chunk_size:
+                    await ws.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "session_id": session_id,
+                                "error": {
+                                    "code": "invalid_audio_chunk_size",
+                                    "message": (
+                                        "SoulX-Duplug /turn expects one float32 chunk per message "
+                                        f"with exactly {self.expected_chunk_size} samples; got {audio.size}."
+                                    ),
+                                },
+                                "ts": time.time(),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
                     continue
 
                 async with self._model_lock:
