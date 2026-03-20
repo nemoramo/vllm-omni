@@ -106,11 +106,9 @@ from vllm_omni.entrypoints.openai.protocol.videos import (
     VideoResponse,
 )
 from vllm_omni.entrypoints.openai.serving_chat import OmniOpenAIServingChat
-from vllm_omni.entrypoints.openai.serving_soulx_duplug_turn import (
-    maybe_run_soulx_duplug_server,
-)
 from vllm_omni.entrypoints.openai.serving_speech import OmniOpenAIServingSpeech
 from vllm_omni.entrypoints.openai.serving_speech_stream import OmniStreamingSpeechHandler
+from vllm_omni.entrypoints.openai.serving_turn import maybe_run_turn_server
 from vllm_omni.entrypoints.openai.serving_video import OmniOpenAIServingVideo, ReferenceImage
 from vllm_omni.entrypoints.openai.storage import STORAGE_MANAGER
 from vllm_omni.entrypoints.openai.stores import VIDEO_STORE, VIDEO_TASKS
@@ -252,7 +250,7 @@ async def omni_run_server_worker(listen_address, sock, args, client_config=None,
 
     # Let model-specific serving modules take over when needed.
     # Keep the generic entrypoint free of per-model boot details.
-    if await maybe_run_soulx_duplug_server(
+    if await maybe_run_turn_server(
         listen_address=listen_address,
         sock=sock,
         args=args,

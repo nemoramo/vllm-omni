@@ -2,36 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-import vllm.envs as envs
 import yaml
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-from vllm.entrypoints.launcher import serve_http
-from vllm.logger import init_logger
-
-logger = init_logger(__name__)
+from fastapi import WebSocket, WebSocketDisconnect
 
 SESSION_TTL_SEC = 60
 GC_INTERVAL_SEC = 10
-
-
-class _NoopEngineClient:
-    def __init__(self) -> None:
-        self.errored = False
-        self.is_running = True
-        self.vllm_config = SimpleNamespace(shutdown_timeout=0)
-
-    def shutdown(self, timeout: int = 0) -> None:
-        self.is_running = False
 
 
 def _looks_like_soulx_config(config: dict[str, Any]) -> bool:
@@ -141,7 +122,7 @@ class SoulXDuplugTurnHandler:
                                 "error": {
                                     "code": "invalid_audio_chunk_size",
                                     "message": (
-                                        "SoulX-Duplug /turn expects one float32 chunk per message "
+                                        "Turn model /turn expects one float32 chunk per message "
                                         f"with exactly {self.expected_chunk_size} samples; got {audio.size}."
                                     ),
                                 },
@@ -175,76 +156,17 @@ class SoulXDuplugTurnHandler:
             return
 
 
-def build_soulx_duplug_app(args: Any) -> FastAPI:
-    served_model_names = args.served_model_name or [args.model]
+class SoulXDuplugTurnModelDefinition:
+    name = "soulx-duplug"
+    supported_tasks = ("turn",)
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    def matches(self, model: str) -> bool:
+        return is_soulx_duplug_model(model)
+
+    def create_handler(self, model: str) -> SoulXDuplugTurnHandler:
         from vllm_omni.model_executor.models.soulx_duplug import load_turn_model
 
-        model = load_turn_model(args.model)
-        handler = SoulXDuplugTurnHandler(model)
-        app.state.soulx_duplug_turn = handler
-        gc_task = asyncio.create_task(handler.session_gc_loop())
-        yield
-        gc_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await gc_task
-
-    app = FastAPI(lifespan=lifespan)
-    app.state.engine_client = _NoopEngineClient()
-
-    @app.get("/health")
-    async def health() -> JSONResponse:
-        return JSONResponse({"status": "healthy", "mode": "soulx-duplug-turn"})
-
-    @app.get("/v1/models")
-    async def models() -> JSONResponse:
-        return JSONResponse({"data": [{"id": served_model_names[0], "object": "model"}]})
-
-    @app.websocket("/turn")
-    async def turn_ws(ws: WebSocket) -> None:
-        handler = ws.app.state.soulx_duplug_turn
-        await handler.handle_session(ws)
-
-    return app
+        return SoulXDuplugTurnHandler(load_turn_model(model))
 
 
-async def maybe_run_soulx_duplug_server(
-    *,
-    listen_address: str,
-    sock: Any,
-    args: Any,
-    uvicorn_kwargs: dict[str, Any],
-) -> bool:
-    """Run the SoulX-Duplug-specific server when the requested model matches."""
-    if not is_soulx_duplug_model(args.model):
-        return False
-
-    app = build_soulx_duplug_app(args)
-    logger.info("Starting SoulX-Duplug /turn server on %s", listen_address)
-
-    local_uvicorn_kwargs = dict(uvicorn_kwargs)
-    shutdown_task = await serve_http(
-        app,
-        sock=sock,
-        enable_ssl_refresh=args.enable_ssl_refresh,
-        host=args.host,
-        port=args.port,
-        log_level=args.uvicorn_log_level,
-        access_log=not args.disable_uvicorn_access_log,
-        timeout_keep_alive=envs.VLLM_HTTP_TIMEOUT_KEEP_ALIVE,
-        ssl_keyfile=args.ssl_keyfile,
-        ssl_certfile=args.ssl_certfile,
-        ssl_ca_certs=args.ssl_ca_certs,
-        ssl_cert_reqs=args.ssl_cert_reqs,
-        h11_max_incomplete_event_size=args.h11_max_incomplete_event_size,
-        h11_max_header_count=args.h11_max_header_count,
-        **local_uvicorn_kwargs,
-    )
-    try:
-        await shutdown_task
-    finally:
-        sock.close()
-
-    return True
+SOULX_DUPLUG_TURN_MODEL = SoulXDuplugTurnModelDefinition()
